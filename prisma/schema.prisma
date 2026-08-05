@@ -1,0 +1,605 @@
+// ============================================================================
+// BarberOS — schema.prisma
+// Fuente de verdad: documento "BarberOS — Diseño de Base de Datos (v2 + revisión final)"
+// ============================================================================
+//
+// DECISIONES DE DISEÑO FIJAS (no cambiar sin actualizar el documento primero):
+//
+// 1. Todas las fechas/horas (DateTime) se almacenan en UTC. La conversión a
+//    la zona horaria del usuario (Uruguay = UTC-3) es responsabilidad de la
+//    capa de aplicación, nunca de la base de datos.
+//
+// 2. Autenticación: una única cuenta (Usuario) por Barbería (relación 1:1).
+//    Tras el login, se elige "qué empleado soy" desde el listado de
+//    Empleado de esa barbería. No hay login individual por empleado en el MVP.
+//
+// 3. Soft delete: Barberia, Empleado, Servicio y Cliente NUNCA se eliminan
+//    físicamente. Se marca `eliminadoEn` + `eliminadoPor`. El resto de las
+//    tablas no lo necesita (o son históricos inmutables, o dependen en
+//    cascada de estas cuatro).
+//
+// 4. Identificadores públicos: solo se exponen códigos públicos donde un ID
+//    puede aparecer en una URL o API sin sesión autenticada de por medio:
+//      - Barberia.slugPublico  → link/QR público de la barbería
+//      - Turno.codigoPublico   → link de confirmación/cancelación enviado al cliente
+//    El resto de las entidades siempre se accede anidado bajo una barbería
+//    ya autenticada, así que no necesitan código público propio en el MVP.
+//
+// 5. Índices parciales (ej. único en Cliente(barberiaId, telefono) solo
+//    para eliminadoEn IS NULL): Prisma no soporta índices parciales de forma
+//    nativa en el schema. Quedan marcados con TODO y se agregan a mano en la
+//    migración SQL generada, tal como se documentó.
+//
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum RolEmpleado {
+  OWNER
+  EMPLOYEE
+}
+
+enum EstadoBarberia {
+  ACTIVA
+  CERRADA_TEMPORAL
+  DESACTIVADA_POR_PAGO
+}
+
+enum EstadoTurno {
+  PENDIENTE
+  CONFIRMADO
+  COMPLETADO
+  CANCELADO
+  NO_ASISTIO
+}
+
+enum EstadoSuscripcion {
+  TRIAL
+  ACTIVA
+  EN_GRACIA
+  DESACTIVADA
+  CANCELADA
+}
+
+enum TipoPlan {
+  MENSUAL
+  ANUAL
+}
+
+enum ProveedorPago {
+  PAYPAL
+  PREX
+  BROU
+}
+
+enum EstadoPago {
+  PENDIENTE
+  APROBADO
+  RECHAZADO
+  REEMBOLSADO
+}
+
+enum TipoNotificacion {
+  SUSCRIPCION_POR_VENCER
+  SUSCRIPCION_EN_GRACIA
+  SUSCRIPCION_DESACTIVADA
+  NUEVO_TURNO
+  TURNO_CANCELADO
+  NUEVA_RESENA
+  OTRO
+}
+
+enum PrioridadNotificacion {
+  BAJA
+  MEDIA
+  ALTA
+}
+
+enum AlcanceCierre {
+  EMPLEADO
+  BARBERIA
+}
+
+enum DiaSemana {
+  LUNES
+  MARTES
+  MIERCOLES
+  JUEVES
+  VIERNES
+  SABADO
+  DOMINGO
+}
+
+enum Tema {
+  CLARO
+  OSCURO
+}
+
+enum Moneda {
+  UYU
+  USD
+  ARS
+  BRL
+  EUR
+}
+
+// ============================================================================
+// BARBERIA
+// ============================================================================
+
+model Barberia {
+  id            String         @id @default(uuid()) @db.Uuid
+  slugPublico   String         @unique @db.VarChar(60)
+  nombre        String         @db.VarChar(120)
+  ubicacion     String?        @db.VarChar(255)
+  latitud       Decimal?       @db.Decimal(9, 6)
+  longitud      Decimal?       @db.Decimal(9, 6)
+  telefono      String         @db.VarChar(20)
+  redesSociales Json           @default("{}")
+  logoUrl       String?        @db.VarChar(255)
+  portadaUrl    String?        @db.VarChar(255)
+  estado        EstadoBarberia @default(ACTIVA)
+  motivoCierre  String?        @db.VarChar(255)
+  cierreHasta   DateTime?      @db.Date
+
+  creadoEn      DateTime  @default(now())
+  actualizadoEn DateTime  @updatedAt
+  eliminadoEn   DateTime?
+  eliminadoPor  String?   @db.Uuid
+
+  // Relaciones
+  usuario              Usuario?             @relation("BarberiaUsuario")
+  eliminadoPorUsuario  Usuario?             @relation("BarberiaEliminadaPor", fields: [eliminadoPor], references: [id], onDelete: SetNull)
+  empleados            Empleado[]
+  servicios            Servicio[]
+  clientes             Cliente[]
+  turnos               Turno[]
+  resenas              Resena[]
+  cierres              Cierre[]
+  suscripciones        Suscripcion[]
+  reportesDescargables ReporteDescargable[]
+  auditorias           Auditoria[]
+
+  @@index([estado])
+  // TODO (migración manual): índice parcial `WHERE eliminadoEn IS NULL` sobre id
+  @@map("barberias")
+}
+
+// ============================================================================
+// USUARIO (cuenta de acceso, 1 por barbería — auth opción A)
+// ============================================================================
+
+model Usuario {
+  id            String    @id @default(uuid()) @db.Uuid
+  barberiaId    String    @unique @db.Uuid
+  email         String    @unique @db.VarChar(255)
+  passwordHash  String    @db.VarChar(255)
+  ultimoLoginEn DateTime?
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  barberia            Barberia              @relation("BarberiaUsuario", fields: [barberiaId], references: [id], onDelete: Restrict)
+  barberiasEliminadas Barberia[]            @relation("BarberiaEliminadaPor")
+  empleadosEliminados Empleado[]            @relation("EmpleadoEliminadoPor")
+  serviciosEliminados Servicio[]            @relation("ServicioEliminadoPor")
+  clientesEliminados  Cliente[]             @relation("ClienteEliminadoPor")
+  configuracion       ConfiguracionUsuario?
+  notificaciones      Notificacion[]
+  auditorias          Auditoria[]
+
+  @@map("usuarios")
+}
+
+// ============================================================================
+// EMPLEADO
+// ============================================================================
+
+model Empleado {
+  id            String      @id @default(uuid()) @db.Uuid
+  barberiaId    String      @db.Uuid
+  nombre        String      @db.VarChar(120)
+  fotoPerfilUrl String?     @db.VarChar(255)
+  rol           RolEmpleado @default(EMPLOYEE)
+  activo        Boolean     @default(true)
+
+  creadoEn      DateTime  @default(now())
+  actualizadoEn DateTime  @updatedAt
+  eliminadoEn   DateTime?
+  eliminadoPor  String?   @db.Uuid
+
+  // Relaciones
+  barberia             Barberia             @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  eliminadoPorUsuario  Usuario?             @relation("EmpleadoEliminadoPor", fields: [eliminadoPor], references: [id], onDelete: SetNull)
+  horarios             Horario[]
+  cierres              Cierre[]
+  turnosAsignados      Turno[]              @relation("TurnoEmpleado")
+  turnosCreados        Turno[]              @relation("TurnoCreadoPor")
+  servicios            EmpleadoServicio[]
+  reportesDescargables ReporteDescargable[]
+
+  @@index([barberiaId, activo])
+  // TODO (migración manual): incluir filtro `WHERE eliminadoEn IS NULL` en el índice de arriba
+  @@map("empleados")
+}
+
+// ============================================================================
+// CLIENTE (sin cuenta, scopeado por barbería)
+// ============================================================================
+
+model Cliente {
+  id             String @id @default(uuid()) @db.Uuid
+  barberiaId     String @db.Uuid
+  nombreCompleto String @db.VarChar(120)
+  telefono       String @db.VarChar(20)
+
+  creadoEn      DateTime  @default(now())
+  actualizadoEn DateTime  @updatedAt
+  eliminadoEn   DateTime?
+  eliminadoPor  String?   @db.Uuid
+
+  // Relaciones
+  barberia            Barberia @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  eliminadoPorUsuario Usuario? @relation("ClienteEliminadoPor", fields: [eliminadoPor], references: [id], onDelete: SetNull)
+  turnos              Turno[]
+  resenas             Resena[]
+
+  @@unique([barberiaId, telefono])
+  // TODO (migración manual): convertir el único de arriba en índice PARCIAL
+  // `WHERE eliminadoEn IS NULL`, para permitir re-crear el cliente si el
+  // registro anterior con ese teléfono fue soft-eliminado.
+  @@map("clientes")
+}
+
+// ============================================================================
+// SERVICIO
+// ============================================================================
+
+model Servicio {
+  id                  String  @id @default(uuid()) @db.Uuid
+  barberiaId          String  @db.Uuid
+  nombre              String  @db.VarChar(80)
+  descripcion         String? @db.VarChar(255)
+  precioBase          Decimal @db.Decimal(10, 2)
+  moneda              Moneda  @default(UYU)
+  duracionBaseMinutos Int
+  activo              Boolean @default(true)
+
+  creadoEn      DateTime  @default(now())
+  actualizadoEn DateTime  @updatedAt
+  eliminadoEn   DateTime?
+  eliminadoPor  String?   @db.Uuid
+
+  // Relaciones
+  barberia            Barberia           @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  eliminadoPorUsuario Usuario?           @relation("ServicioEliminadoPor", fields: [eliminadoPor], references: [id], onDelete: SetNull)
+  turnos              Turno[]
+  empleados           EmpleadoServicio[]
+
+  @@index([barberiaId, activo])
+  @@map("servicios")
+}
+
+// ============================================================================
+// EMPLEADO_SERVICIO (precio/duración personalizado por barbero)
+// ============================================================================
+
+model EmpleadoServicio {
+  id              String   @id @default(uuid()) @db.Uuid
+  empleadoId      String   @db.Uuid
+  servicioId      String   @db.Uuid
+  precio          Decimal? @db.Decimal(10, 2)
+  duracionMinutos Int?
+  activo          Boolean  @default(true)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  empleado Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+  servicio Servicio @relation(fields: [servicioId], references: [id], onDelete: Cascade)
+
+  @@unique([empleadoId, servicioId])
+  @@map("empleado_servicios")
+}
+
+// ============================================================================
+// TURNO
+// ============================================================================
+
+model Turno {
+  id            String @id @default(uuid()) @db.Uuid
+  codigoPublico String @unique @default(cuid()) @db.VarChar(40) // link de confirmación/cancelación enviado al cliente
+
+  barberiaId String @db.Uuid
+  empleadoId String @db.Uuid
+  servicioId String @db.Uuid
+  clienteId  String @db.Uuid
+
+  fechaHoraInicio DateTime // UTC
+  fechaHoraFin    DateTime // UTC — calculado según duración planeada
+
+  precioFinal Decimal @db.Decimal(10, 2) // copia histórica del precio al momento de reservar
+  moneda      Moneda  @default(UYU) // copia histórica de la moneda
+
+  duracionFinalMinutos Int? // se completa al marcar COMPLETADO, puede diferir de lo planeado
+
+  descripcionCliente    String? @db.VarChar(500) // lo que el cliente escribió al reservar
+  observacionesInternas String? @db.Text // notas del barbero, NUNCA visibles para el cliente
+
+  estado EstadoTurno @default(PENDIENTE)
+
+  creadoManualmente   Boolean @default(false)
+  creadoPorEmpleadoId String? @db.Uuid // qué empleado logueado cargó el turno manual (puede diferir de empleadoId)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  barberia          Barberia  @relation(fields: [barberiaId], references: [id], onDelete: Restrict)
+  empleado          Empleado  @relation("TurnoEmpleado", fields: [empleadoId], references: [id], onDelete: Restrict)
+  servicio          Servicio  @relation(fields: [servicioId], references: [id], onDelete: Restrict)
+  cliente           Cliente   @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  creadoPorEmpleado Empleado? @relation("TurnoCreadoPor", fields: [creadoPorEmpleadoId], references: [id], onDelete: SetNull)
+  resena            Resena?
+
+  @@index([empleadoId, fechaHoraInicio]) // agenda del barbero
+  @@index([barberiaId, fechaHoraInicio]) // agenda / reportes de toda la barbería
+  @@index([estado])
+  @@index([clienteId, fechaHoraInicio]) // historial del cliente
+  @@map("turnos")
+}
+
+// ============================================================================
+// HORARIO (disponibilidad semanal recurrente)
+// ============================================================================
+
+model Horario {
+  id         String    @id @default(uuid()) @db.Uuid
+  empleadoId String    @db.Uuid
+  diaSemana  DiaSemana
+  horaInicio DateTime  @db.Time
+  horaFin    DateTime  @db.Time
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  empleado Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  @@index([empleadoId, diaSemana])
+  @@map("horarios")
+}
+
+// ============================================================================
+// CIERRE (vacaciones de empleado o cierre de toda la barbería)
+// ============================================================================
+
+model Cierre {
+  id          String        @id @default(uuid()) @db.Uuid
+  alcance     AlcanceCierre
+  barberiaId  String        @db.Uuid
+  empleadoId  String?       @db.Uuid // obligatorio a nivel app si alcance = EMPLEADO
+  fechaInicio DateTime      @db.Date
+  fechaFin    DateTime      @db.Date
+  motivo      String?       @db.VarChar(255)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  barberia Barberia  @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  empleado Empleado? @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  @@index([empleadoId, fechaInicio, fechaFin])
+  @@index([barberiaId, fechaInicio, fechaFin])
+  @@map("cierres")
+}
+
+// ============================================================================
+// RESENA
+// ============================================================================
+
+model Resena {
+  id         String  @id @default(uuid()) @db.Uuid
+  barberiaId String  @db.Uuid
+  clienteId  String  @db.Uuid
+  turnoId    String? @unique @db.Uuid
+  puntuacion Int     @db.SmallInt // 1 a 5, validado a nivel de aplicación
+  comentario String? @db.VarChar(500)
+
+  creadaEn      DateTime @default(now())
+  actualizadaEn DateTime @updatedAt
+
+  // Relaciones
+  barberia Barberia @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  cliente  Cliente  @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  turno    Turno?   @relation(fields: [turnoId], references: [id], onDelete: SetNull)
+
+  @@index([barberiaId, creadaEn])
+  @@map("resenas")
+}
+
+// ============================================================================
+// NOTIFICACION
+// ============================================================================
+
+model Notificacion {
+  id              String                @id @default(uuid()) @db.Uuid
+  usuarioId       String                @db.Uuid
+  tipo            TipoNotificacion
+  prioridad       PrioridadNotificacion @default(MEDIA)
+  titulo          String                @db.VarChar(120)
+  mensaje         String                @db.VarChar(500)
+  leida           Boolean               @default(false)
+  fechaExpiracion DateTime?
+  datosExtra      Json?
+
+  creadaEn      DateTime @default(now())
+  actualizadaEn DateTime @updatedAt
+
+  // Relaciones
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, leida, creadaEn])
+  @@index([usuarioId, prioridad, leida])
+  @@map("notificaciones")
+}
+
+// ============================================================================
+// PLAN
+// ============================================================================
+
+model Plan {
+  id           String   @id @default(uuid()) @db.Uuid
+  tipo         TipoPlan
+  nombre       String   @db.VarChar(60)
+  precio       Decimal? @db.Decimal(10, 2) // pendiente de definir
+  moneda       Moneda   @default(UYU)
+  duracionDias Int
+  activo       Boolean  @default(true)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  suscripciones Suscripcion[]
+
+  @@map("planes")
+}
+
+// ============================================================================
+// SUSCRIPCION
+// ============================================================================
+
+model Suscripcion {
+  id                    String            @id @default(uuid()) @db.Uuid
+  barberiaId            String            @db.Uuid
+  planId                String?           @db.Uuid // NULL durante el trial
+  estado                EstadoSuscripcion @default(TRIAL)
+  fechaInicio           DateTime          @default(now())
+  fechaVencimiento      DateTime
+  fechaFinGracia        DateTime?
+  notificado80Porciento Boolean           @default(false)
+  notificadoVencimiento Boolean           @default(false)
+
+  creadaEn      DateTime @default(now())
+  actualizadaEn DateTime @updatedAt
+
+  // Relaciones
+  barberia Barberia @relation(fields: [barberiaId], references: [id], onDelete: Restrict)
+  plan     Plan?    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  pagos    Pago[]
+
+  @@index([barberiaId, creadaEn]) // encontrar la suscripción vigente
+  @@index([estado, fechaVencimiento]) // usado por el cron diario
+  @@map("suscripciones")
+}
+
+// ============================================================================
+// PAGO
+// ============================================================================
+
+model Pago {
+  id                String        @id @default(uuid()) @db.Uuid
+  suscripcionId     String        @db.Uuid
+  proveedor         ProveedorPago
+  monto             Decimal       @db.Decimal(10, 2)
+  moneda            Moneda        @default(UYU)
+  estado            EstadoPago    @default(PENDIENTE)
+  referenciaExterna String?       @db.VarChar(255)
+  pagadoEn          DateTime?
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  suscripcion Suscripcion @relation(fields: [suscripcionId], references: [id], onDelete: Restrict)
+
+  @@unique([proveedor, referenciaExterna]) // evita procesar el mismo webhook dos veces
+  @@index([suscripcionId, estado])
+  @@map("pagos")
+}
+
+// ============================================================================
+// REPORTE_DESCARGABLE (log de exportaciones a Excel, no guarda datos crudos)
+// ============================================================================
+
+model ReporteDescargable {
+  id           String   @id @default(uuid()) @db.Uuid
+  barberiaId   String   @db.Uuid
+  empleadoId   String?  @db.Uuid // NULL = reporte de toda la barbería (solo OWNER)
+  periodoDesde DateTime @db.Date
+  periodoHasta DateTime @db.Date
+  archivoUrl   String   @db.VarChar(255)
+
+  generadoEn DateTime @default(now())
+
+  // Relaciones
+  barberia Barberia  @relation(fields: [barberiaId], references: [id], onDelete: Cascade)
+  empleado Empleado? @relation(fields: [empleadoId], references: [id], onDelete: SetNull)
+
+  @@index([barberiaId, periodoDesde, periodoHasta])
+  @@map("reportes_descargables")
+}
+
+// ============================================================================
+// CONFIGURACION_USUARIO (preferencias de sesión: tema, sonido)
+// ============================================================================
+
+model ConfiguracionUsuario {
+  id             String  @id @default(uuid()) @db.Uuid
+  usuarioId      String  @unique @db.Uuid
+  tema           Tema    @default(CLARO)
+  sonidoActivado Boolean @default(true)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  // Relaciones
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@map("configuraciones_usuario")
+}
+
+// ============================================================================
+// AUDITORIA (registro inmutable de acciones importantes — solo INSERT)
+// ============================================================================
+
+model Auditoria {
+  id         String  @id @default(uuid()) @db.Uuid
+  usuarioId  String? @db.Uuid // NULL si la acción la disparó el sistema (ej. cron)
+  barberiaId String  @db.Uuid
+
+  accion    String @db.VarChar(60) // ej. CREAR_EMPLEADO, CANCELAR_TURNO, CAMBIO_SUSCRIPCION
+  entidad   String @db.VarChar(60) // nombre de la tabla afectada, ej. "Empleado"
+  entidadId String @db.Uuid
+
+  datosAnteriores Json? // snapshot antes del cambio (NULL si es creación)
+  datosNuevos     Json? // snapshot después del cambio (NULL si es eliminación)
+
+  versionEsquema Int @default(1) // permite evolucionar el formato de auditoría sin romper registros viejos
+
+  creadoEn DateTime @default(now())
+
+  // Relaciones
+  usuario  Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+  barberia Barberia @relation(fields: [barberiaId], references: [id], onDelete: Restrict)
+
+  @@index([entidad, entidadId, creadoEn]) // historial de un registro puntual
+  @@index([barberiaId, creadoEn]) // actividad de una barbería
+  @@index([usuarioId, creadoEn])
+  @@map("auditorias")
+}
