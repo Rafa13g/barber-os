@@ -1,3 +1,78 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================================
+   DESIGN TOKENS — BarberOS
+   Paleta "acero y latón": fría y neutra por defecto, con un único acento
+   metálico apagado. Nunca usar el acento como color de fondo grande.
+   ============================================================================ */
+
+:root {
+  /* Superficies (modo claro) */
+  --color-surface: #eef0ef;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #e2e5e3;
+
+  /* Texto (modo claro) */
+  --color-ink: #15191b;
+  --color-ink-muted: #57615f;
+
+  /* Líneas */
+  --color-line: #d4d8d5;
+
+  /* Acento (latón apagado) — igual en ambos modos */
+  --color-accent: #b07a3e;
+  --color-accent-strong: #8f5f2c;
+  --color-accent-soft: #e7d2b4;
+  --color-on-accent: #1a1204;
+
+  /* Estados */
+  --color-danger: #b14a3b;
+  --color-danger-soft: #f1dad6;
+  --color-success: #4c7a63;
+  --color-success-soft: #dbe7e0;
+
+  /* Radios: precisos, no ni cero ni "pill" */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+.dark {
+  --color-surface: #14181a;
+  --color-surface-raised: #1c2124;
+  --color-surface-sunken: #0f1213;
+
+  --color-ink: #e9ecea;
+  --color-ink-muted: #93a09c;
+
+  --color-line: #2b3134;
+
+  --color-accent: #c48c4f;
+  --color-accent-strong: #d9a566;
+  --color-accent-soft: #3a2e1c;
+  --color-on-accent: #14181a;
+
+  --color-danger: #cc6353;
+  --color-danger-soft: #3a2320;
+  --color-success: #6ba088;
+  --color-success-soft: #1f2e27;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+}
+
+/* ============================================================================
+   Elemento de firma: esquina cortada en diagonal (estilo ticket de turno /
+   filo de navaja). Se usa con moderación — ítem activo del sidebar, botón
+   primario, eyebrow de las cards. No repetir en cualquier elemento.
+   ============================================================================ */
+.clip-corner {
+  clip-path: polygon(10px 0, 100% 0, 100% 100%, 0 100%, 0 10px);
+}
+.clip-corner-sm {
+  clip-path: polygon(6px 0, 100% 0, 100% 100%, 0 100%, 0 6px);
+}

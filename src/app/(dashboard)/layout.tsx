@@ -1,22 +1,30 @@
+"use client";
+
+import { useState } from "react";
+import { Sidebar } from "@/components/layout/Sidebar";
+import { Navbar } from "@/components/layout/Navbar";
+
 // Layout compartido por todo el panel del barbero/dueño.
-// Debe incluir: sidebar (3 rayitas) con Notificaciones, Perfil,
-// Opciones, QR y Link, Reportes, y Configuración (solo OWNER).
-// También debe mostrar alertas de notificaciones nuevas sin importar
-// en qué sección esté el usuario (no solo dentro de /notificaciones).
 //
-// TODO: verificar sesión (NextAuth) + qué Empleado está activo
-// (guardado en cookie/sesión tras pasar por /seleccionar-empleado).
-// TODO: componente <Sidebar /> + componente <AlertaNotificacion />.
+// Todavía NO incluye: verificación de sesión, selector real de empleado,
+// ni alertas de notificaciones en vivo — eso se conecta cuando armemos
+// login y notificaciones. Por ahora es la estructura visual.
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const [menuAbierto, setMenuAbierto] = useState(false);
+
   return (
-    <div>
-      {/* TODO: <Sidebar /> */}
-      <main>{children}</main>
+    <div className="flex min-h-screen bg-surface">
+      <Sidebar abierto={menuAbierto} onCerrar={() => setMenuAbierto(false)} />
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Navbar onAbrirMenu={() => setMenuAbierto(true)} />
+        <main className="flex-1 p-4 lg:p-8">{children}</main>
+      </div>
     </div>
   );
 }
